@@ -2,10 +2,10 @@ import jieba
 import re
 
 class preprocessing():
-    __PAD__ = 0
-    __GO__ = 1
-    __EOS__ = 2
-    __UNK__ = 3
+    __PAD__ = 0   # 填充词汇
+    __GO__ = 1    # 句子开始
+    __EOS__ = 2   # 句子结束
+    __UNK__ = 3   # 未知词(低频的词替换为UNK)
     vocab = ['__PAD__', '__GO__', '__EOS__', '__UNK__']
     def __init__(self):
         #self.encoderFile = "/home/yanwii/Python/NLP/seq2seq/seq2seq_no_buckets/preprocessing/MySeq2seq/Data/alldata_ask.txt"

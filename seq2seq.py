@@ -118,8 +118,8 @@ class seq2seq(nn.Module):
         self.batch_index = 0
         self.GO_token = 2
         self.EOS_token = 1
-        self.input_size = 94
-        self.output_size = 120
+        self.input_size = 523
+        self.output_size = 1371
         self.hidden_size = 100
         self.max_length = 15
         self.show_epoch = 100
@@ -127,7 +127,7 @@ class seq2seq(nn.Module):
         self.model_path = "./model/"
         self.n_layers = 1
         self.dropout_p = 0.05
-        self.beam_search = True
+        self.beam_search = False
         self.top_k = 5
         self.alpha = 0.5
 
@@ -331,8 +331,8 @@ class seq2seq(nn.Module):
         encoder_hidden = self.encoder.init_hidden()
         encoder_outputs, encoder_hidden = self.encoder(input_variable, encoder_hidden)
 
-        decoder_input = Variable(torch.LongTensor([[SOS_token]]))
-        decoder_context = Variable(torch.zeros(1, self.decoder.hidden_size))
+        decoder_input = torch.LongTensor([[SOS_token]])
+        decoder_context = torch.zeros(1, self.decoder.hidden_size)
         decoder_hidden = encoder_hidden
         if USE_CUDA:
             decoder_input = decoder_input.cuda()
