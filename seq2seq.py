@@ -64,7 +64,7 @@ class Attn(nn.Module):
         for i in range(seq_len):
             attn_energies[i] = self.score(hidden, encoder_outputs[i])
 
-        return F.softmax(attn_energies).unsqueeze(0).unsqueeze(0)
+        return F.softmax(attn_energies, dim=0).unsqueeze(0).unsqueeze(0)
 
     def score(self, hidden, encoder_output):
         if self.method == 'dot':
@@ -106,7 +106,7 @@ class AttnDecoderRNN(nn.Module):
 
         rnn_output = rnn_output.squeeze(0) # S=1 x B x N -> B x N
         context = context.squeeze(1)       # B x S=1 x N -> B x N
-        output = F.log_softmax(self.out(torch.cat((rnn_output, context), 1)))
+        output = F.log_softmax(self.out(torch.cat((rnn_output, context), 1)), dim=1)
         #output = self.out(torch.cat((rnn_output, context), 1))
         return output, context, hidden, attn_weights
 
@@ -114,20 +114,20 @@ class AttnDecoderRNN(nn.Module):
 class seq2seq(nn.Module):
     def __init__(self):
         super(seq2seq, self).__init__()
-        self.max_epoches = 100000
+        self.max_epoches = 454609 * 10
         self.batch_index = 0
         self.GO_token = 2
         self.EOS_token = 1
-        self.input_size = 523
-        self.output_size = 1371
-        self.hidden_size = 100
-        self.max_length = 15
-        self.show_epoch = 100
+        self.input_size = 62324
+        self.output_size = 55541
+        self.hidden_size = 256
+        self.max_length = 256
+        self.show_epoch = 1000
         self.use_cuda = USE_CUDA
         self.model_path = "./model/"
-        self.n_layers = 1
+        self.n_layers = 2
         self.dropout_p = 0.05
-        self.beam_search = False
+        self.beam_search = True
         self.top_k = 5
         self.alpha = 0.5
 
@@ -147,13 +147,13 @@ class seq2seq(nn.Module):
         self.criterion = nn.NLLLoss()
 
     def loadData(self):
-        with open("./data/enc.vec") as enc:
+        with open("./data/enc.vec", encoding='utf8') as enc:
             line = enc.readline()
             while line:
                 self.enc_vec.append(line.strip().split())
                 line = enc.readline()
 
-        with open("./data/dec.vec") as dec:
+        with open("./data/dec.vec", encoding='utf8') as dec:
             line = dec.readline()
             while line:
                 self.dec_vec.append(line.strip().split())
@@ -218,6 +218,8 @@ class seq2seq(nn.Module):
                 print("    loss:", loss)
                 print("    target:%s\n    output:%s" % (tar, pre))
                 print("    per-time:", (stop-start))
+                print("    avg_loss:", np.array(loss_track).sum() / len(loss_track))
+                loss_track = []
                 torch.save(self.state_dict(), self.model_path+'params.pkl')
 
     def step(self, input_variable, target_variable, max_length):
@@ -262,8 +264,8 @@ class seq2seq(nn.Module):
                 if USE_CUDA: decoder_input = decoder_input.cuda()
                 if ni == EOS_token: break
         loss.backward()
-        torch.nn.utils.clip_grad_norm(self.encoder.parameters(), clip)
-        torch.nn.utils.clip_grad_norm(self.decoder.parameters(), clip)
+        torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), clip)
+        torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), clip)
         self.encoder_optimizer.step()
         self.decoder_optimizer.step()
         decoder_outputs = torch.cat(decoder_outputs, 0)
@@ -288,12 +290,12 @@ class seq2seq(nn.Module):
 
         # 加载字典
         str_to_vec = {}
-        with open("./data/enc.vocab") as enc_vocab:
+        with open("./data/enc.vocab", encoding='utf8') as enc_vocab:
             for index,word in enumerate(enc_vocab.readlines()):
                 str_to_vec[word.strip()] = index
 
         vec_to_str = {}
-        with open("./data/dec.vocab") as dec_vocab:
+        with open("./data/dec.vocab", encoding='utf8') as dec_vocab:
             for index,word in enumerate(dec_vocab.readlines()):
                 vec_to_str[index] = word.strip()
 

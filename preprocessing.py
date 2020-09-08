@@ -19,15 +19,15 @@ class preprocessing():
     
     def wordToVocabulary(self, originFile, vocabFile, segementFile):
         vocabulary = []
-        sege = open(segementFile, "w")
-        with open(originFile, 'r') as en:
+        sege = open(segementFile, "w", encoding='utf8')
+        with open(originFile, 'r', encoding='utf8') as en:
             for sent in en.readlines():
                 # 去标点
                 if "enc" in segementFile:
                     #sentence = re.sub("[\s+\.\!\/_,$%^*(+\"\']+|[+——！，。“”’‘？?、~@#￥%……&*（）]+", "", sent.strip())
                     sentence = sent.strip()
                     words = jieba.lcut(sentence)
-                    print(words)
+                    # print(words)
                 else:
                     words = jieba.lcut(sent.strip())
                 vocabulary.extend(words)
@@ -37,9 +37,12 @@ class preprocessing():
         sege.close()
 
         # 去重并存入词典
-        vocab_file = open(vocabFile, "w")
+        vocabulary_map = {}
+        for ind, val in enumerate(vocabulary):
+            vocabulary_map[val] = ind
+        vocab_file = open(vocabFile, "w", encoding='utf8')
         _vocabulary = list(set(vocabulary))
-        _vocabulary.sort(key=vocabulary.index)
+        _vocabulary.sort(key=lambda x: vocabulary_map[x])
         _vocabulary = self.vocab + _vocabulary
         for index, word in enumerate(_vocabulary):
             vocab_file.write(word+"\n")
@@ -48,18 +51,18 @@ class preprocessing():
     def toVec(self, segementFile, vocabFile, doneFile):
         word_dicts = {}
         vec = []
-        with open(vocabFile, "r") as dict_f:
+        with open(vocabFile, "r", encoding='utf8') as dict_f:
             for index, word in enumerate(dict_f.readlines()):
                 word_dicts[word.strip()] = index
 
-        f = open(doneFile, "w")
+        f = open(doneFile, "w", encoding='utf8')
         if "enc.vec" in doneFile:
             f.write("3 3 3 3\n")
             f.write("3\n")
         elif "dec.vec" in doneFile:
             f.write(str(word_dicts.get("other", 3))+"\n")
             f.write(str(word_dicts.get("other", 3))+"\n")
-        with open(segementFile, "r") as sege_f:
+        with open(segementFile, "r", encoding='utf8') as sege_f:
             for sent in sege_f.readlines():
                 sents = [i.strip() for i in sent.split(" ")[:-1]]
                 vec.extend(sents)
