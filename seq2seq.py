@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import optim
+import torch.nn.utils.rnn as rnn_utils
 
 USE_CUDA = torch.cuda.is_available()
 SOS_token = 2
@@ -31,13 +32,14 @@ class EncoderRNN(nn.Module):
 
     def forward(self, word_inputs, hidden):
         seq_len = len(word_inputs)
-        embedded = self.embedding(word_inputs).view(seq_len, 1, -1)
+        embedded = self.embedding(word_inputs)   # 得到的词向量，每一行代表一个词
         output, hidden = self.gru(embedded, hidden)
         return output, hidden
 
-    def init_hidden(self):
-        hidden = torch.zeros(self.n_layers, 1, self.hidden_size)
-        if USE_CUDA: hidden = hidden.cuda()
+    def init_hidden(self, batch_size=1):
+        hidden = torch.zeros(self.n_layers, batch_size, self.hidden_size)
+        if USE_CUDA:
+            hidden = hidden.cuda()
         return hidden
 
 
@@ -56,25 +58,30 @@ class Attn(nn.Module):
             self.other = nn.Parameter(torch.FloatTensor(1, hidden_size))
 
     def forward(self, hidden, encoder_outputs):
-        seq_len = len(encoder_outputs)
+        seq_len, batch_size, _ = encoder_outputs.size()
 
-        attn_energies = torch.zeros(seq_len) # B x 1 x S
-        if USE_CUDA: attn_energies = attn_energies.cuda()
+        attn_energies = torch.zeros((seq_len, batch_size))  # B x 1 x S
+        if USE_CUDA:
+            attn_energies = attn_energies.cuda()
 
+        # 按照批次依次计算得分
         for i in range(seq_len):
             attn_energies[i] = self.score(hidden, encoder_outputs[i])
 
-        return F.softmax(attn_energies, dim=0).unsqueeze(0).unsqueeze(0)
+        return F.softmax(attn_energies, dim=0).transpose(1, 0).unsqueeze(1)
 
     def score(self, hidden, encoder_output):
+        energys = list()
         if self.method == 'dot':
-            energy = torch.dot(hidden.view(-1), encoder_output.view(-1))
-            return energy
-
+            for i in range(len(encoder_output)):
+                energys.append(torch.dot(hidden[i].view(-1), encoder_output[i].view(-1)))
+            return torch.stack(energys)
         elif self.method == 'general':
             energy = self.attn(encoder_output)
-            energy = torch.dot(hidden.view(-1), encoder_output.view(-1))
-            return energy
+            for i in range(len(encoder_output)):
+                energys.append(torch.dot(hidden[i].view(-1), encoder_output[i].view(-1)))
+            return torch.stack(energys)
+
 
 class AttnDecoderRNN(nn.Module):
     def __init__(self, attn_model, hidden_size, output_size, n_layers=1, dropout_p=0.1, max_length=10):
@@ -96,15 +103,17 @@ class AttnDecoderRNN(nn.Module):
 
     def forward(self, word_input, last_context, last_hidden, encoder_outputs):
 
-        word_embedded = self.embedding(word_input).view(1, 1, -1) # S=1 x B x N
+        # .view(1, 1, -1) # S=1 x B x N
+        word_embedded = self.embedding(word_input)
 
         rnn_input = torch.cat((word_embedded, last_context.unsqueeze(0)), 2)
         rnn_output, hidden = self.gru(rnn_input, last_hidden)
 
         attn_weights = self.attn(rnn_output.squeeze(0), encoder_outputs)
-        context = attn_weights.bmm(encoder_outputs.transpose(0, 1)) # B x 1 x N
+        # bmm https://blog.csdn.net/qq_40178291/article/details/100302375
+        context = attn_weights.bmm(encoder_outputs.transpose(0, 1))  # B x 1 x N
 
-        rnn_output = rnn_output.squeeze(0) # S=1 x B x N -> B x N
+        rnn_output = rnn_output.squeeze(0)  # S=1 x B x N -> B x N
         context = context.squeeze(1)       # B x S=1 x N -> B x N
         output = F.log_softmax(self.out(torch.cat((rnn_output, context), 1)), dim=1)
         #output = self.out(torch.cat((rnn_output, context), 1))
@@ -118,11 +127,11 @@ class seq2seq(nn.Module):
         self.batch_index = 0
         self.GO_token = 2
         self.EOS_token = 1
-        self.input_size = 62324
-        self.output_size = 55541
-        self.hidden_size = 256
+        self.input_size = 102
+        self.output_size = 186
+        self.hidden_size = 128
         self.max_length = 256
-        self.show_epoch = 1000
+        self.show_epoch = 1
         self.use_cuda = USE_CUDA
         self.model_path = "./model/"
         self.n_layers = 2
@@ -130,6 +139,7 @@ class seq2seq(nn.Module):
         self.beam_search = True
         self.top_k = 5
         self.alpha = 0.5
+        self.batch_size = 16
 
         self.enc_vec = []
         self.dec_vec = []
@@ -177,18 +187,19 @@ class seq2seq(nn.Module):
                 dec = self.dec_vec[self.batch_index:self.batch_index+batch_size]
                 self.batch_index += batch_size
         for index in range(len(enc)):
-            enc = enc[0][:self.max_length] if len(enc[0]) > self.max_length else enc[0]
-            dec = dec[0][:self.max_length] if len(dec[0]) > self.max_length else dec[0]
+            enc_sub = enc[index][:self.max_length] if len(enc[index]) > self.max_length else enc[index]
+            dec_sub = dec[index][:self.max_length] if len(dec[index]) > self.max_length else dec[index]
 
-            enc = [int(i) for i in enc]
-            dec = [int(i) for i in dec]
-            dec.append(eos_token)
+            enc_sub = [int(i) for i in enc_sub]
+            dec_sub = [int(i) for i in dec_sub]
+            dec_sub.append(eos_token)
 
-            inputs.append(enc)
-            targets.append(dec)
+            inputs.append(torch.tensor(enc_sub, dtype=torch.long))
+            targets.append(torch.tensor(dec_sub, dtype=torch.long))
 
-        inputs = torch.LongTensor(inputs).transpose(1, 0).contiguous()
-        targets = torch.LongTensor(targets).transpose(1, 0).contiguous()
+        inputs = rnn_utils.pad_sequence(inputs)
+        targets = rnn_utils.pad_sequence(targets)
+
         if USE_CUDA:
             inputs = inputs.cuda()
             targets = targets.cuda()
@@ -203,12 +214,15 @@ class seq2seq(nn.Module):
             print("No model!")
         loss_track = []
 
+        self.encoder.train()
+        self.decoder.train()
+
         for epoch in range(self.max_epoches):
             start = time.time()
-            inputs, targets = self.next(1, shuffle=False)
+            inputs, targets = self.next(self.batch_size, shuffle=False)
             loss, logits = self.step(inputs, targets, self.max_length)
             loss_track.append(loss)
-            _,v = torch.topk(logits, 1)
+            _, v = torch.topk(logits, 1)
             pre = v.cpu().data.numpy().T.tolist()[0][0]
             tar = targets.cpu().data.numpy().T.tolist()[0]
             stop = time.time()
@@ -218,27 +232,31 @@ class seq2seq(nn.Module):
                 print("    loss:", loss)
                 print("    target:%s\n    output:%s" % (tar, pre))
                 print("    per-time:", (stop-start))
-                print("    avg_loss:", np.array(loss_track).sum() / len(loss_track))
+                print("    avg_loss:", np.array(
+                    loss_track).sum() / len(loss_track))
                 loss_track = []
                 torch.save(self.state_dict(), self.model_path+'params.pkl')
+        torch.save(self.state_dict(), self.model_path+'params.pkl')
 
     def step(self, input_variable, target_variable, max_length):
         teacher_forcing_ratio = 0.1
         clip = 5.0
-        loss = 0 # Added onto for each word
+        loss = 0  # Added onto for each word
 
         self.encoder_optimizer.zero_grad()
         self.decoder_optimizer.zero_grad()
 
-        input_length = input_variable.size()[0]
+        input_length, batch_size = input_variable.size()
         target_length = target_variable.size()[0]
 
-        encoder_hidden = self.encoder.init_hidden()
+        encoder_hidden = self.encoder.init_hidden(batch_size)
         encoder_outputs, encoder_hidden = self.encoder(input_variable, encoder_hidden)
 
-        decoder_input = torch.LongTensor([[SOS_token]])
-        decoder_context = torch.zeros(1, self.decoder.hidden_size)
-        decoder_hidden = encoder_hidden # Use last hidden state from encoder to start decoder
+        # torch.LongTensor([[SOS_token]])
+        decoder_input = torch.zeros((1, batch_size), dtype=torch.long) + SOS_token
+        decoder_context = torch.zeros(batch_size, self.decoder.hidden_size)
+        # Use last hidden state from encoder to start decoder
+        decoder_hidden = encoder_hidden
         if USE_CUDA:
             decoder_input = decoder_input.cuda()
             decoder_context = decoder_context.cuda()
@@ -250,7 +268,7 @@ class seq2seq(nn.Module):
             for di in range(target_length):
                 decoder_output, decoder_context, decoder_hidden, decoder_attention = self.decoder(decoder_input, decoder_context, decoder_hidden, encoder_outputs)
                 loss += self.criterion(decoder_output, target_variable[di])
-                decoder_input = target_variable[di]
+                decoder_input = target_variable[di].unsqueeze(0)    # 使用正确的target作为下一次的输入，我们称之为teacher forcing技术
                 decoder_outputs.append(decoder_output.unsqueeze(0))
         else:
             for di in range(target_length):
@@ -258,11 +276,14 @@ class seq2seq(nn.Module):
                 loss += self.criterion(decoder_output, target_variable[di])
                 decoder_outputs.append(decoder_output.unsqueeze(0))
                 topv, topi = decoder_output.data.topk(1)
-                ni = topi[0][0]
+                # ni = topi[0][0]
 
-                decoder_input = Variable(torch.LongTensor([[ni]]))
-                if USE_CUDA: decoder_input = decoder_input.cuda()
-                if ni == EOS_token: break
+                # decoder_input = torch.LongTensor([[ni]])
+                # if USE_CUDA:
+                #     decoder_input = decoder_input.cuda()
+                decoder_input = topi.view(decoder_input.shape)   # 直接使用网络输出的target作为下一次输入
+                # if ni == EOS_token:
+                #     break
         loss.backward()
         torch.nn.utils.clip_grad_norm_(self.encoder.parameters(), clip)
         torch.nn.utils.clip_grad_norm_(self.decoder.parameters(), clip)
@@ -291,13 +312,16 @@ class seq2seq(nn.Module):
         # 加载字典
         str_to_vec = {}
         with open("./data/enc.vocab", encoding='utf8') as enc_vocab:
-            for index,word in enumerate(enc_vocab.readlines()):
+            for index, word in enumerate(enc_vocab.readlines()):
                 str_to_vec[word.strip()] = index
 
         vec_to_str = {}
         with open("./data/dec.vocab", encoding='utf8') as dec_vocab:
-            for index,word in enumerate(dec_vocab.readlines()):
+            for index, word in enumerate(dec_vocab.readlines()):
                 vec_to_str[index] = word.strip()
+
+        self.encoder.eval()
+        self.decoder.eval()
 
         while True:
             input_strs = input("me > ")
@@ -318,7 +342,7 @@ class seq2seq(nn.Module):
                     print("ai > ", "".join(outstrs), sample[3])
             else:
                 logits = self.infer(input_vec)
-                _,v = torch.topk(logits, 1)
+                _, v = torch.topk(logits, 1)
                 pre = v.cpu().data.numpy().T.tolist()[0][0]
                 outstrs = []
                 for i in pre:
@@ -342,13 +366,16 @@ class seq2seq(nn.Module):
         decoder_outputs = []
 
         for i in range(self.max_length):
-            decoder_output, decoder_context, decoder_hidden, decoder_attention = self.decoder(decoder_input, decoder_context, decoder_hidden, encoder_outputs)
+            decoder_output, decoder_context, decoder_hidden, decoder_attention = self.decoder(
+                decoder_input, decoder_context, decoder_hidden, encoder_outputs)
             decoder_outputs.append(decoder_output.unsqueeze(0))
             topv, topi = decoder_output.data.topk(1)
             ni = topi[0][0]
-            decoder_input = torch.LongTensor([[ni]]) # Chosen word is next input
-            if USE_CUDA: decoder_input = decoder_input.cuda()
-            if ni == EOS_token: break
+            decoder_input = torch.LongTensor([[ni]])  # Chosen word is next input
+            if USE_CUDA:
+                decoder_input = decoder_input.cuda()
+            if ni == EOS_token:
+                break
 
         decoder_outputs = torch.cat(decoder_outputs, 0)
         return decoder_outputs
@@ -386,8 +413,9 @@ class seq2seq(nn.Module):
 
             # 筛选出topk
             df = pd.DataFrame(tmp)
-            df.columns = ['sequence', 'pre_socres', 'fin_scores', "ave_scores", "decoder_context", "decoder_hidden", "decoder_attention", "encoder_outputs"]
-            sequence_len = df.sequence.apply(lambda x:len(x))
+            df.columns = ['sequence', 'pre_socres', 'fin_scores', "ave_scores",
+                          "decoder_context", "decoder_hidden", "decoder_attention", "encoder_outputs"]
+            sequence_len = df.sequence.apply(lambda x: len(x))
             df['ave_scores'] = df['fin_scores'] / sequence_len
             df = df.sort_values('ave_scores', ascending=False).reset_index().drop(['index'], axis=1)
             df = df[:(self.top_k-dead_k)]
@@ -423,7 +451,7 @@ class seq2seq(nn.Module):
             topk_prob = topk[0][0][k]
             topk_index = int(topk[1][0][k])
             pre_scores += topk_prob
-            fin_scores = pre_scores - (k - 1 ) * self.alpha
+            fin_scores = pre_scores - (k - 1) * self.alpha
             samples.append([sequence+[topk_index], pre_scores, fin_scores, ave_scores, decoder_context, decoder_hidden, decoder_attention, encoder_outputs])
         return samples
 
@@ -433,6 +461,7 @@ class seq2seq(nn.Module):
         except Exception as e:
             pass
         self.train()
+
 
 if __name__ == '__main__':
     seq = seq2seq()
