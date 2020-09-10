@@ -157,13 +157,13 @@ class seq2seq(nn.Module):
         self.criterion = nn.NLLLoss()
 
     def loadData(self):
-        with open("./data/enc.vec", encoding='utf8') as enc:
+        with open("./data/enc.vec", encoding='UTF-8-sig') as enc:
             line = enc.readline()
             while line:
                 self.enc_vec.append(line.strip().split())
                 line = enc.readline()
 
-        with open("./data/dec.vec", encoding='utf8') as dec:
+        with open("./data/dec.vec", encoding='UTF-8-sig') as dec:
             line = dec.readline()
             while line:
                 self.dec_vec.append(line.strip().split())
@@ -311,12 +311,12 @@ class seq2seq(nn.Module):
 
         # 加载字典
         str_to_vec = {}
-        with open("./data/enc.vocab", encoding='utf8') as enc_vocab:
+        with open("./data/enc.vocab", encoding='UTF-8-sig') as enc_vocab:
             for index, word in enumerate(enc_vocab.readlines()):
                 str_to_vec[word.strip()] = index
 
         vec_to_str = {}
-        with open("./data/dec.vocab", encoding='utf8') as dec_vocab:
+        with open("./data/dec.vocab", encoding='UTF-8-sig') as dec_vocab:
             for index, word in enumerate(dec_vocab.readlines()):
                 vec_to_str[index] = word.strip()
 

@@ -14,7 +14,7 @@
             "name": "训练",
             "type": "python",
             "request": "launch",
-            "program": "seq2seq.py",
+            "program": "seq2seq_full.py",
             "console": "integratedTerminal",
             "args": [
                 "train"
