@@ -170,7 +170,7 @@ class SEQ2SEQ(nn.Module):
 
     def __init__(self, input_size, output_size, hidden_size, n_layers=2, dropout_p=0.05, max_length=64):
         super(SEQ2SEQ, self).__init__()
-        self.input_size = input_size;
+        self.input_size = input_size
         self.output_size = output_size
         self.hidden_size = hidden_size
         self.n_layers = n_layers
@@ -181,14 +181,14 @@ class SEQ2SEQ(nn.Module):
         self.encoder = EncoderRNN(self.input_size, self.hidden_size, self.n_layers)
         self.decoder = AttnDecoderRNN('general', self.hidden_size, self.output_size, self.n_layers, self.dropout_p, self.max_length)
 
-    def forward_encoding(self, inputs):
+    def _forward_encoding(self, inputs):
         _, batch_size = inputs.size()
         # 解码器
         encoder_hidden = self.encoder.init_hidden(batch_size)
         encoder_outputs, encoder_hidden = self.encoder(inputs, encoder_hidden)
         return encoder_outputs, encoder_hidden
     
-    def forward_decoding(self, decoder_input, decoder_context, decoder_hidden, encoder_outputs):
+    def _forward_decoding(self, decoder_input, decoder_context, decoder_hidden, encoder_outputs):
         _, batch_size, _ = encoder_outputs.size()
         if decoder_context is None:
             decoder_context = torch.zeros(batch_size, self.decoder.hidden_size)           # 创建编码器上下文
@@ -196,27 +196,47 @@ class SEQ2SEQ(nn.Module):
                 decoder_context = decoder_context.cuda()
         decoder_output, decoder_context, decoder_hidden, decoder_attention = self.decoder(decoder_input, decoder_context, decoder_hidden, encoder_outputs)
         return decoder_output, decoder_context, decoder_hidden, decoder_attention
+    
+    def forward(self, cmd, *inputs):
+        if cmd == 'encoding':
+            return self._forward_encoding(*inputs)
+        elif cmd == 'decoding':
+            return self._forward_decoding(*inputs)
+        else:
+            raise NotImplementedError
+            
+
 
 class Master(object):
 
     def __init__(self):
-        self.input_size = 102
-        self.output_size = 186
+        self.input_size = 1121
+        self.output_size = 1830
         self.hidden_size = 128
         self.layers = 2
         self.dropout = 0.05
         self.max_length = 256
+        self.checkpoint = './model/seq2seq_full.pkl'
 
         self.model = SEQ2SEQ(self.input_size, self.output_size, self.hidden_size, self.layers, self.dropout, self.max_length)
         if USE_CUDA:
             self.model.cuda()
-            self.model = nn.DataParallel(self.model)
+            # self.model = nn.DataParallel(self.model)
     
     def save_model(self):
-        pass
+        torch.save(self.model.state_dict(), self.checkpoint)
 
     def load_model(self):
-        pass
+        if os.path.exists(self.checkpoint) and os.path.isfile(self.checkpoint):
+            self.model.load_state_dict(torch.load(self.checkpoint))
+        else:
+            print('No checkpoint')
+    
+    def _get_model(self):
+        model = self.model
+        if isinstance(model, nn.DataParallel):
+            model = model.module
+        return model
 
 
 class Trainer(Master):
@@ -224,19 +244,20 @@ class Trainer(Master):
     def __init__(self):
         super(Trainer, self).__init__()
         self.epoches = 30
-        self.batch_size = 32
-        self.show_epoch = 1
+        self.batch_size = 16
+        self.show_epoch = 10
         self.clip = 5.0   # 梯度裁剪参数（防止梯度爆炸）
         self.teacher_forcing_ratio = 0.5    # 使用teacher_forcing技术的几率
         
         self.dataset = CorpusDataset()
         self.dataloader = RnnDataloader(self.dataset, self.batch_size, shuffle=True)
 
-        self.encoder_optimizer = optim.Adam(self.model.encoder.parameters(), lr=0.01)
-        self.decoder_optimizer = optim.Adam(self.model.decoder.parameters(), lr=0.01)
+        self.encoder_optimizer = optim.Adam(self._get_model().encoder.parameters(), lr=0.001)
+        self.decoder_optimizer = optim.Adam(self._get_model().decoder.parameters(), lr=0.001)
         self.criterion = nn.NLLLoss()
 
     def train(self):
+        self.load_model()
         self.model.train()
         total_loss = 0
         total_count = 0
@@ -260,6 +281,7 @@ class Trainer(Master):
                             every_time_count / epoch_count,
                             total_loss / total_count, 
                             epoch_loss / epoch_count))
+                    self.save_model()
 
     def _epoch_train(self):
         for i, (inputs, targets) in enumerate(self.dataloader):
@@ -271,7 +293,7 @@ class Trainer(Master):
             self.encoder_optimizer.zero_grad()
             self.decoder_optimizer.zero_grad()
             # 对输入词索引进行编码
-            encoder_outputs, encoder_hidden = self.model.forward_encoding(inputs)
+            encoder_outputs, encoder_hidden = self.model('encoding', inputs)
 
             target_length = targets.shape[0]
 
@@ -286,7 +308,7 @@ class Trainer(Master):
             if use_teacher_forcing:
                 for di in range(target_length):
                     decoder_input = targets[di].unsqueeze(0)    # 使用正确的target作为下一次的输入，我们称之为teacher forcing技术
-                    decoder_output, decoder_context, decoder_hidden, _ = self.model.forward_decoding(decoder_input, decoder_context, decoder_hidden, encoder_outputs)
+                    decoder_output, decoder_context, decoder_hidden, _ = self.model('decoding', decoder_input, decoder_context, decoder_hidden, encoder_outputs)
                     if loss is None:
                         loss = self.criterion(decoder_output, targets[di])
                     else:
@@ -296,7 +318,7 @@ class Trainer(Master):
                 for di in range(target_length):
                     if di == 0:
                         decoder_input = targets[di].unsqueeze(0)   # 因为第一个就是句子起始标识
-                    decoder_output, decoder_context, decoder_hidden, _ = self.model.forward_decoding(decoder_input, decoder_context, decoder_hidden, encoder_outputs)
+                    decoder_output, decoder_context, decoder_hidden, _ = self.model('decoding', decoder_input, decoder_context, decoder_hidden, encoder_outputs)
                     if loss is None:
                         loss = self.criterion(decoder_output, targets[di])
                     else:
@@ -307,8 +329,8 @@ class Trainer(Master):
 
             loss.backward()   # 向后传播梯度
             if self.clip is not None:
-                torch.nn.utils.clip_grad_norm_(self.model.encoder.parameters(), self.clip)
-                torch.nn.utils.clip_grad_norm_(self.model.decoder.parameters(), self.clip)
+                torch.nn.utils.clip_grad_norm_(self._get_model().encoder.parameters(), self.clip)
+                torch.nn.utils.clip_grad_norm_(self._get_model().decoder.parameters(), self.clip)
             # 更新参数
             self.encoder_optimizer.step()
             self.decoder_optimizer.step()
