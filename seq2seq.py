@@ -127,8 +127,8 @@ class seq2seq(nn.Module):
         self.batch_index = 0
         self.GO_token = 2
         self.EOS_token = 1
-        self.input_size = 102
-        self.output_size = 186
+        self.input_size = 1121
+        self.output_size = 1830
         self.hidden_size = 128
         self.max_length = 256
         self.show_epoch = 1
@@ -136,7 +136,7 @@ class seq2seq(nn.Module):
         self.model_path = "./model/"
         self.n_layers = 2
         self.dropout_p = 0.05
-        self.beam_search = True
+        self.beam_search = False
         self.top_k = 5
         self.alpha = 0.5
         self.batch_size = 16
