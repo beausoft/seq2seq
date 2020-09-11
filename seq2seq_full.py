@@ -247,14 +247,51 @@ class Trainer(Master):
         self.batch_size = 16
         self.show_epoch = 10
         self.clip = 5.0   # 梯度裁剪参数（防止梯度爆炸）
-        self.teacher_forcing_ratio = 0.5    # 使用teacher_forcing技术的几率
+        self.teacher_forcing_ratio = 0.5    # 使用teacher_forcing技术的机率
+
+        self.encode_file = './data/enc.vec'
+        self.decode_file = './data/dec.vec'
         
-        self.dataset = CorpusDataset()
+        self.dataset = CorpusDataset(encode_file=self.encode_file, decode_file=self.decode_file)
         self.dataloader = RnnDataloader(self.dataset, self.batch_size, shuffle=True)
 
         self.encoder_optimizer = optim.Adam(self._get_model().encoder.parameters(), lr=0.001)
         self.decoder_optimizer = optim.Adam(self._get_model().decoder.parameters(), lr=0.001)
         self.criterion = nn.NLLLoss()
+
+    def _accuracy(self, outputs, targets):
+        _, v = torch.topk(outputs, 1)
+        outputs = v.squeeze().cpu().numpy()
+        targets = targets.cpu().numpy()
+        token_size, batch_size = outputs.shape
+        result = []
+        accuracy = 0
+
+        for i in range(batch_size):
+            output = outputs[:, i]
+            out = []
+            for j in range(token_size):
+                val = output[j].item()
+                if val == 0:
+                    continue
+                out.append(val)
+                if val == EOS_token:
+                    break
+            target = targets[:, i]
+            tar = []
+            for j in range(token_size):
+                val = target[j].item()
+                if val == 0:
+                    continue
+                tar.append(val)
+                if val == EOS_token:
+                    break
+            out = np.array(out)
+            tar = np.array(tar)
+            result.append((out, tar))
+            if len(out) == len(tar) and (out == tar).sum() == len(out):
+                accuracy += 1
+        return result, accuracy / batch_size
 
     def train(self):
         self.load_model()
@@ -265,6 +302,7 @@ class Trainer(Master):
         for epoch in range(self.epoches):
             epoch_loss = 0
             epoch_count = 0
+            epoch_accuracy = 0
             every_time_count = 0
             for loss_val, outputs, targets, every_time in self._epoch_train():
                 total_loss += loss_val
@@ -273,14 +311,20 @@ class Trainer(Master):
                 epoch_count += 1
                 every_time_count += every_time
 
+                # 计算代价
+                data, accuracy = self._accuracy(outputs, targets)
+                epoch_accuracy += accuracy
+
                 if epoch_count % self.show_epoch == 0 or epoch_count == batch_length:
-                    print('epoch: {} - [{}/{}], time: {:.3f}, total loss: {:.6f}, loss: {:.6f}'
+                    print('epoch: {} - [{}/{}], time: {:.3f}, total loss: {:.6f}, loss: {:.6f}, accuracy: {:.3f}'
                         .format(epoch + 1, 
                             epoch_count,
                             batch_length,
                             every_time_count / epoch_count,
                             total_loss / total_count, 
-                            epoch_loss / epoch_count))
+                            epoch_loss / epoch_count,
+                            epoch_accuracy / epoch_count * 100))
+                    print('    output:%s\n    target:%s' % random.choice(data))
                     self.save_model()
 
     def _epoch_train(self):
@@ -339,6 +383,80 @@ class Trainer(Master):
             stop = time.time()
             yield loss_val, decoder_outputs, targets, stop - start
 
+class Evaluation(Master):
 
-trainer = Trainer()
-trainer.train()
+    def __init__(self, enc_vocab_file = './data/enc.vocab', dec_vocab_file = './data/dec.vocab', vocab_encoding = 'UTF-8-sig'):
+        super(Evaluation, self).__init__()
+        # 加载字典
+        self.str_to_vec = {}
+        with open(enc_vocab_file, encoding=vocab_encoding) as enc_vocab:
+            for index, word in enumerate(enc_vocab.readlines()):
+                self.str_to_vec[word.strip()] = index
+        self.vec_to_str = {}
+        with open(dec_vocab_file, encoding=vocab_encoding) as dec_vocab:
+            for index, word in enumerate(dec_vocab.readlines()):
+                self.vec_to_str[index] = word.strip()
+        
+        # 载入模型参数并且设置为评估模式
+        self.load_model()
+        self.model.eval()
+    
+    def predict(self, input_strs):
+        # 字符串转向量
+        segement = jieba.lcut(input_strs)
+        input_vec = [self.str_to_vec.get(i, 3) for i in segement]
+        input_vec = self._make_infer_fd(input_vec)
+
+        # 编码输出
+        encoder_outputs, encoder_hidden = self.model('encoding', input_vec)
+
+        decoder_input = torch.LongTensor([[SOS_token]])  # 起始字符
+        if USE_CUDA:
+            decoder_input = decoder_input.cuda()
+        decoder_context = None
+        decoder_hidden = encoder_hidden
+
+        decoder_outputs = []
+
+        for i in range(self.max_length):
+            decoder_output, decoder_context, decoder_hidden, _ = self.model('decoding', decoder_input, decoder_context, decoder_hidden, encoder_outputs)
+            decoder_outputs.append(decoder_output.unsqueeze(0))
+            topv, topi = decoder_output.data.topk(1)
+            ni = topi[0][0]
+            decoder_input = torch.LongTensor([[ni]])  # Chosen word is next input
+            if USE_CUDA:
+                decoder_input = decoder_input.cuda()
+            if ni == EOS_token:
+                break
+        
+        decoder_outputs = torch.cat(decoder_outputs, 0)
+
+        _, v = torch.topk(decoder_outputs, 1)
+        pre = v.cpu().data.numpy().T.tolist()[0][0]
+        outstrs = []
+        for i in pre:
+            if i == 1:
+                break
+            outstrs.append(self.vec_to_str.get(i, "Un"))
+        return "".join(outstrs)
+    
+    def _make_infer_fd(self, input_vec):
+        inputs = []
+        enc = input_vec[:self.max_length] if len(input_vec) > self.max_length else input_vec
+        inputs.append(enc)
+        inputs = torch.LongTensor(inputs).transpose(1, 0).contiguous()
+        if USE_CUDA:
+            inputs = inputs.cuda()
+        return inputs
+
+    def __call__(self, *params):
+        return self.predict(*params)
+
+eval_model = Evaluation()
+while True:
+    input_strs = input("me > ")
+    output_strs = eval_model(input_strs)
+    print("ai > ", output_strs)
+
+# trainer = Trainer()
+# trainer.train()
