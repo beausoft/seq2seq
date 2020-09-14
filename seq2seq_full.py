@@ -16,8 +16,9 @@ import torch.nn.utils.rnn as rnn_utils
 import torch.utils.data as data
 
 USE_CUDA = torch.cuda.is_available()
-SOS_token = 2
-EOS_token = 1
+SOS_token = 1      # 句子开始
+EOS_token = 2      # 句子结束
+UNK_token = 3      # 未知词
 
 class EncoderRNN(nn.Module):
     def __init__(self, input_size, hidden_size, n_layers=1):
@@ -210,8 +211,8 @@ class SEQ2SEQ(nn.Module):
 class Master(object):
 
     def __init__(self):
-        self.input_size = 1121
-        self.output_size = 1830
+        self.input_size = 1125
+        self.output_size = 1833
         self.hidden_size = 128
         self.layers = 2
         self.dropout = 0.05
@@ -269,7 +270,7 @@ class Trainer(Master):
 
         for i in range(batch_size):
             output = outputs[:, i]
-            out = []
+            out = [SOS_token]    # 因为输出的时候是包括起始字符所以代价的时候加入起始字符方便比较。
             for j in range(token_size):
                 val = output[j].item()
                 if val == 0:
@@ -278,7 +279,7 @@ class Trainer(Master):
                 if val == EOS_token:
                     break
             target = targets[:, i]
-            tar = []
+            tar = []      # 目标默认是包含起始字符的，所以这里不用加
             for j in range(token_size):
                 val = target[j].item()
                 if val == 0:
@@ -295,7 +296,7 @@ class Trainer(Master):
 
     def train(self):
         self.load_model()
-        self.model.train()
+        self.model.train()    # 模型训练模式
         total_loss = 0
         total_count = 0
         batch_length = len(self.dataloader)
@@ -345,33 +346,26 @@ class Trainer(Master):
             decoder_context = None
             decoder_hidden = encoder_hidden  # Use last hidden state from encoder to start decoder
 
-            decoder_outputs = []
-
-            loss = None
             use_teacher_forcing = random.random() < self.teacher_forcing_ratio
-            if use_teacher_forcing:
-                for di in range(target_length):
-                    decoder_input = targets[di].unsqueeze(0)    # 使用正确的target作为下一次的输入，我们称之为teacher forcing技术
-                    decoder_output, decoder_context, decoder_hidden, _ = self.model('decoding', decoder_input, decoder_context, decoder_hidden, encoder_outputs)
-                    if loss is None:
-                        loss = self.criterion(decoder_output, targets[di])
-                    else:
-                        loss += self.criterion(decoder_output, targets[di])
-                    decoder_outputs.append(decoder_output.unsqueeze(0))
-            else:
-                for di in range(target_length):
-                    if di == 0:
-                        decoder_input = targets[di].unsqueeze(0)   # 因为第一个就是句子起始标识
-                    decoder_output, decoder_context, decoder_hidden, _ = self.model('decoding', decoder_input, decoder_context, decoder_hidden, encoder_outputs)
-                    if loss is None:
-                        loss = self.criterion(decoder_output, targets[di])
-                    else:
-                        loss += self.criterion(decoder_output, targets[di])
-                    decoder_outputs.append(decoder_output.unsqueeze(0))
-                    topv, topi = decoder_output.data.topk(1)
-                    decoder_input = topi.view(decoder_input.shape)   # 直接使用网络输出的target作为下一次输入
 
-            loss.backward()   # 向后传播梯度
+            decoder_outputs = []
+            sum_loss = None
+            for token_index in range(target_length - 1):
+                if token_index == 0:
+                    decoder_input = targets[token_index].unsqueeze(0)   # 因为第一个就是句子的起始标识
+                decoder_output, decoder_context, decoder_hidden, _ = self.model('decoding', decoder_input, decoder_context, decoder_hidden, encoder_outputs)
+                loss = self.criterion(decoder_output, targets[token_index + 1])
+                sum_loss = loss if sum_loss is None else sum_loss + loss
+                decoder_outputs.append(decoder_output.unsqueeze(0))
+                if use_teacher_forcing:
+                    # 使用正确的target作为下一次的输入，我们称之为teacher forcing技术
+                    decoder_input = targets[token_index + 1].unsqueeze(0)
+                else:
+                    topv, topi = decoder_output.topk(1)
+                    # 直接使用网络输出的target作为下一次输入
+                    decoder_input = topi.view(decoder_input.shape)
+
+            sum_loss.backward()   # 向后传播梯度
             if self.clip is not None:
                 torch.nn.utils.clip_grad_norm_(self._get_model().encoder.parameters(), self.clip)
                 torch.nn.utils.clip_grad_norm_(self._get_model().decoder.parameters(), self.clip)
@@ -379,7 +373,7 @@ class Trainer(Master):
             self.encoder_optimizer.step()
             self.decoder_optimizer.step()
             decoder_outputs = torch.cat(decoder_outputs, 0)
-            loss_val = loss.item() / target_length
+            loss_val = sum_loss.item() / (target_length - 1)    # 这里减1，是因为实际循环的次数少了一次，这次的输入是下一次的输出
             stop = time.time()
             yield loss_val, decoder_outputs, targets, stop - start
 
@@ -404,7 +398,7 @@ class Evaluation(Master):
     def predict(self, input_strs):
         # 字符串转向量
         segement = jieba.lcut(input_strs)
-        input_vec = [self.str_to_vec.get(i, 3) for i in segement]
+        input_vec = [self.str_to_vec.get(i, UNK_token) for i in segement]
         input_vec = self._make_infer_fd(input_vec)
 
         # 编码输出
@@ -435,7 +429,7 @@ class Evaluation(Master):
         pre = v.cpu().data.numpy().T.tolist()[0][0]
         outstrs = []
         for i in pre:
-            if i == 1:
+            if i == EOS_token:
                 break
             outstrs.append(self.vec_to_str.get(i, "Un"))
         return "".join(outstrs)

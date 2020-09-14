@@ -1,12 +1,14 @@
 import jieba
 import re
 
+
 class preprocessing():
     __PAD__ = 0   # 填充词汇
     __GO__ = 1    # 句子开始
     __EOS__ = 2   # 句子结束
     __UNK__ = 3   # 未知词(低频的词替换为UNK)
     vocab = ['__PAD__', '__GO__', '__EOS__', '__UNK__']
+
     def __init__(self):
         #self.encoderFile = "/home/yanwii/Python/NLP/seq2seq/seq2seq_no_buckets/preprocessing/MySeq2seq/Data/alldata_ask.txt"
         #self.decoderFile = '/home/yanwii/Python/NLP/seq2seq/seq2seq_no_buckets/preprocessing/MySeq2seq/Data/alldata_answer.txt'
@@ -14,9 +16,9 @@ class preprocessing():
         self.encoderFile = "./data/question.txt"
         self.decoderFile = "./data/answer.txt"
         self.savePath = './data/'
-        
+
         jieba.load_userdict("./data/supplementvocab.txt")
-    
+
     def wordToVocabulary(self, originFile, vocabFile, segementFile):
         vocabulary = []
         sege = open(segementFile, "w", encoding='UTF-8-sig')
@@ -24,7 +26,7 @@ class preprocessing():
             for sent in en.readlines():
                 # 去标点
                 if "enc" in segementFile:
-                    #sentence = re.sub("[\s+\.\!\/_,$%^*(+\"\']+|[+——！，。“”’‘？?、~@#￥%……&*（）]+", "", sent.strip())
+                    # sentence = re.sub("[\s+\.\!\/_,$%^*(+\"\']+|[+——！，。“”’‘？?、~@#￥%……&*（）]+", "", sent.strip())
                     sentence = sent.strip()
                     words = jieba.lcut(sentence)
                     # print(words)
@@ -57,11 +59,11 @@ class preprocessing():
 
         f = open(doneFile, "w", encoding='UTF-8-sig')
         if "enc.vec" in doneFile:
-            f.write("3 3 3 3\n")
-            f.write("3\n")
+            f.write("3 3 3 3\n")   # 未知词样本1
+            f.write("3\n")         # 未知词样本2
         elif "dec.vec" in doneFile:
-            f.write(str(word_dicts.get("other", 3))+"\n")
-            f.write(str(word_dicts.get("other", 3))+"\n")
+            f.write(str(word_dicts.get("other", 3))+"\n")   # 未知词样本输出1
+            f.write(str(word_dicts.get("other", 3))+"\n")   # 未知词样本输出2
         with open(segementFile, "r", encoding='UTF-8-sig') as sege_f:
             for sent in sege_f.readlines():
                 sents = [i.strip() for i in sent.split(" ")[:-1]]
@@ -70,19 +72,14 @@ class preprocessing():
                     f.write(str(word_dicts.get(word))+" ")
                 f.write("\n")
         f.close()
-            
 
     def main(self):
         # 获得字典
         self.wordToVocabulary(self.encoderFile, self.savePath+'enc.vocab', self.savePath+'enc.segement')
         self.wordToVocabulary(self.decoderFile, self.savePath+'dec.vocab', self.savePath+'dec.segement')
         # 转向量
-        self.toVec(self.savePath+"enc.segement", 
-                   self.savePath+"enc.vocab", 
-                   self.savePath+"enc.vec")
-        self.toVec(self.savePath+"dec.segement", 
-                   self.savePath+"dec.vocab", 
-                   self.savePath+"dec.vec")
+        self.toVec(self.savePath+"enc.segement", self.savePath + "enc.vocab", self.savePath+"enc.vec")
+        self.toVec(self.savePath+"dec.segement", self.savePath + "dec.vocab", self.savePath+"dec.vec")
 
 
 if __name__ == '__main__':
